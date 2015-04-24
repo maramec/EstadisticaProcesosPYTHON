@@ -1,0 +1,171 @@
+# EstadisticaProcesosPYTHON
+Proyecto realizado para el módulo de "Lenguajes de prototipado rápido" del máster INFTEL 2014/15.Programa que periódicamente (la frecuencia de muestreo es un parámetro del programa) analiza los procesos en el sistema. El programa  genera un fichero html en el que aparece la hora en que se generó el informe y  cuantos procesos activos tiene cada usuario. Si un usuario supera el número máximo  de procesos activos pasados al programa por parámetro enviará un email al  administrador indicando que usuario ha superado el límite. Esta información no se  volverá a enviar sobre este usuario hasta pasadas 2 horas.
+
+Ejecutar: ./controlProcesos.py[frecuencia][númeroProcesos]
+
+
+Archivo controlProcesos.py:
+
+#!/usr/bin/env python3
+# -*- coding: UTF-8 -*-
+
+import subprocess
+import datetime
+import time
+import threading
+import sys
+
+#correo
+import smtplib
+import mimetypes
+# modulos de correo
+import email
+import email.mime.application
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+listaUsuarios=[]
+dictUsuarios = {}
+
+#funcion que comprueba si han pasado 2h desde la ultima modificacion
+def tiempoPasado(tAnterior):
+	tiempoReal = datetime.datetime.now()
+	c = tiempoReal - tAnterior
+	#salida con formato: 0:00:03.003173
+	c=str(c)
+	c=c.split(":")[0]
+	c=int(c)
+	if (c>=2):
+		return True
+	else:
+		return False
+
+def enviarReporte(nombreHTML,diccionario):
+	# Crea un mensaje de texto plano
+	msg = MIMEMultipart()
+	msg['Subject'] = 'Informe'
+	msg['From'] = 'maramecinftel2@gmail.com'
+	msg['To'] = 'maramecinftel2@gmail.com'
+
+	# El cuerpo del mensaje
+	body = MIMEText("A continuacion se muestra el o los usuarios que exceden el numero de procesos permitidos: \n"+str(diccionario)+ "\n Ademas se adjunta el archivo .html con todos los procesos del sistema que tiene cada usuario." )
+	msg.attach(body)
+
+	# Archivo adjunto
+	filename=nombreHTML
+	fp=open(filename,'rb')
+	att = email.mime.application.MIMEApplication(fp.read(),_subtype="html")
+	fp.close()
+	att.add_header('Content-Disposition','attachment',filename=filename)
+	msg.attach(att)
+
+	# Enviar a traves de servidor gmail
+	s = smtplib.SMTP('smtp.gmail.com', 587)
+	s.starttls()
+	s.login('maramecinftel2@gmail.com','maria280389')
+	s.sendmail('maramecinftel2@gmail.com','maramecinftel2@gmail.com', msg.as_string())
+	s.quit()
+
+def modificarUltimaMod(diccionarioGlobal, diccionario):
+	for key1,value1 in diccionario.items():
+		#import pdb; pdb.set_trace()
+		for key2,value2 in diccionarioGlobal.items():
+			if(key1 == key2):
+				hora = datetime.datetime.now()
+				diccionarioGlobal[key2]['ultimaNotificacion']=hora
+
+def funcionPrincipal(contNombreArchivo, tiempo, veces):
+	
+	#sera el diccionario donde se guardan los usuarios que se han pasado de procesos
+	dictUsuariosPasados={}
+
+	#inicializamos el diccionario con el numero de apariciones a 0 para las siguientes veces que se ejecute la funcion
+	# de este modo podemos saber si ya se envio notificacion ya que quedara guardado todo
+	# como: {'usuario': {n=0, ultimanotificacionAnterior}}
+	for key, value in dictUsuarios.items():
+		value['n']=0	
+
+	#Popen ejecuta lo que le pase
+	#PIPE  es una tubería que uso para meter la salida y los errores de la funcion ejecutada 
+	proceso = subprocess.Popen(['ps', '-AF'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+	#si la tuberia tiene demasiados datos se satura, se usa el communicate para liberar
+	listado, error_encontrado = proceso.communicate()
+	
+	if not error_encontrado:
+		for linea in listado.decode('utf-8').split('\n'):
+			#import pdb; pdb.set_trace()
+			usuario = linea.split(" ")[0]
+
+			if usuario in dictUsuarios:
+				dictUsuarios[usuario]['n'] += 1
+			else:
+				dictUsuarios[usuario]={'n':1,'ultimaNotificacion':None}
+
+		#Se crea el fichero.html
+		nombreArchivo= 'datos'+str(contNombreArchivo)+'.html'
+		archivo = open(nombreArchivo,'w')
+		tiempoActual = str(datetime.datetime.now())
+
+		#no imprimimos microsegundos
+		tiempoActualmod = tiempoActual.split(".")[0]
+		archivo.write('Fecha de creacion: %s \n' %(tiempoActualmod))
+		archivo.write('Usuario		Numero de procesos en ejecucion \n')
+		for key,value in dictUsuarios.items():
+			#ultimaNotificacion a string
+			un = str(value['ultimaNotificacion'])
+			r = "%s 	-> 	%d 	->    %s\n"%(key, value['n'],un)
+			archivo.write(str(r))
+		archivo.close()
+		
+		#si hay algun usuario que tiene mas procesos abiertos de los permitidos se notificara al administrador
+		#crearemos para ello un dict de usuarios que tienen mas procesos de la cuenta
+		#para posteriormente mostrarlo por correo
+		for key,value in dictUsuarios.items():
+			if (value['n']>veces):
+				if (value['ultimaNotificacion'] is None):
+					#si no lo anadimos al diccionario para el envio
+					k=key
+					v=value['n']
+					dictUsuariosPasados[k]=v
+				else:
+					#si ya ha sido mandado una vez comprobamos hace cuanto
+					if (tiempoPasado(value['ultimaNotificacion'])):
+						#si entra aqui es que ya ha pasado mas de 2h desde la ultima
+						#por lo que lo metemos en el diccionario para enviar
+						k=key
+						v=value['n']
+						dictUsuariosPasados[k]=v
+		if ((len(dictUsuariosPasados))>0):
+			enviarReporte(nombreArchivo,dictUsuariosPasados)
+			#se modifica la fecha de la ultima modificacion a aquellos usuarios respecto a los que se han informado
+			modificarUltimaMod(dictUsuarios,dictUsuariosPasados)
+		
+	else: 
+		print ("Se produjo el siguiente error:\n%s" % error_encontrado)
+	#para cambiar el nombre del informe hecho
+	contNombreArchivo = contNombreArchivo+1
+	dictUsuariosPasados={}	
+	#repetiremos cada X segundos
+	threading.Timer(tiempo, funcionPrincipal, [contNombreArchivo, tiempo, veces ]).start()
+
+
+if __name__ == '__main__':         
+	try:
+		if len(sys.argv) <=2:
+			exit('Introduzca: ./controlProcesos.py [frecuencia en segundos] [numero maximo procesos]')
+		t = sys.argv[1]
+		v = sys.argv[2]
+		if ((t.isdigit()) and (v.isdigit())): 
+			cont = 0
+			t=int(t)
+			v=int(v)
+			#tiempo = t veces=v
+			funcionPrincipal(cont,t,v)
+		else:
+			exit('Introduzca: ./controlProcesos.py [frecuencia en segundos] [numero maximo procesos]')
+	except Exception as e:
+		exit('Error: [%s]' % e)
+
+
+	
+Archivo 
